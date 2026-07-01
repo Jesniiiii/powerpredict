@@ -1,0 +1,17 @@
+pandas
+numpy
+scikit-learn
+tensorflow
+keras-tcn
+xgboost
+lightgbm
+kafka-python-ng
+influxdb-client
+psycopg2-binary
+fastapi
+uvicorn[standard]
+python-dotenv
+matplotlib
+seaborn
+jupyter
+pytest

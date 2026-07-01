@@ -1,0 +1,47 @@
+version: "3.8"
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: powerpredict-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: powerpredict-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=powerpredict123
+      - DOCKER_INFLUXDB_INIT_ORG=powerpredict
+      - DOCKER_INFLUXDB_INIT_BUCKET=grid_data
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+
+  postgres:
+    image: postgres:16
+    container_name: powerpredict-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=powerpredict
+      - POSTGRES_PASSWORD=powerpredict123
+      - POSTGRES_DB=powerpredict_meta
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  influxdb-data:
+  postgres-data:
