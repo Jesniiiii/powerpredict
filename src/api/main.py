@@ -5,6 +5,8 @@ import pandas as pd
 import tensorflow as tf
 import xgboost as xgb
 from fastapi import FastAPI
+from influxdb_client import InfluxDBClient
+from dotenv import load_dotenv
 
 app = FastAPI(title="PowerPredict API")
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +32,13 @@ maintenance_model.load_model(os.path.join(MODELS_DIR, "maintenance", "xgboost_ma
 
 test_df = pd.read_csv(os.path.join(DATA_DIR, "test_uci_household.csv"), index_col="datetime", parse_dates=True)
 
+ENV_PATH = os.path.join(BASE_DIR, "..", "..", ".env")
+load_dotenv(dotenv_path=ENV_PATH)
+INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN")
+
+influx_client = InfluxDBClient(url="http://localhost:8086", token=INFLUX_TOKEN, org="powerpredict")
+query_api = influx_client.query_api()
+
 
 @app.get("/health")
 def health():
@@ -38,16 +47,76 @@ def health():
 
 @app.get("/forecast")
 def get_forecast():
+    query = '''
+    from(bucket: "grid_data")
+      |> range(start: -2h)
+      |> filter(fn: (r) => r._measurement == "grid_reading")
+      |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+      |> sort(columns: ["_time"])
+    '''
+    tables = query_api.query_data_frame(query)
+
+    if tables.empty or len(tables) < 13:
+        # Not enough live history yet — fall back to static test data
+        feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
+        latest_row = test_df[feature_cols].iloc[-1:].values
+        latest_reshaped = latest_row.reshape((1, 1, latest_row.shape[1]))
+        prediction = lstm_model.predict(latest_reshaped, verbose=0)
+        return {
+            "predicted_active_power_5min": float(prediction[0][0]),
+            "timestamp": str(test_df.index[-1]),
+            "source": "static_fallback",
+            "reason": "insufficient live history"
+        }
+
+    live_df = tables.rename(columns={
+        "active_power": "Global_active_power",
+        "voltage": "Voltage",
+        "current": "Global_intensity",
+        "reactive_power": "Global_reactive_power"
+    }).set_index("_time")
+    live_df["Sub_metering_1"] = 0.0
+    live_df["Sub_metering_2"] = 0.0
+    live_df["Sub_metering_3"] = 0.0
+
+    target_col = "Global_active_power"
+    for lag in [1, 2, 3, 6, 12]:
+        live_df[f"{target_col}_lag_{lag}"] = live_df[target_col].shift(lag)
+    for window in [3, 6, 12]:
+        live_df[f"{target_col}_roll_mean_{window}"] = live_df[target_col].shift(1).rolling(window).mean()
+        live_df[f"{target_col}_roll_std_{window}"] = live_df[target_col].shift(1).rolling(window).std()
+
+    live_df["hour"] = live_df.index.hour
+    live_df["day_of_week"] = live_df.index.dayofweek
+    live_df["is_weekend"] = (live_df["day_of_week"] >= 5).astype(int)
+    live_df["hour_sin"] = np.sin(2 * np.pi * live_df["hour"] / 24)
+    live_df["hour_cos"] = np.cos(2 * np.pi * live_df["hour"] / 24)
+
+    live_df = live_df.dropna()
+
+    if live_df.empty:
+        feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
+        latest_row = test_df[feature_cols].iloc[-1:].values
+        latest_reshaped = latest_row.reshape((1, 1, latest_row.shape[1]))
+        prediction = lstm_model.predict(latest_reshaped, verbose=0)
+        return {
+            "predicted_active_power_5min": float(prediction[0][0]),
+            "timestamp": str(test_df.index[-1]),
+            "source": "static_fallback",
+            "reason": "not enough consecutive live readings yet"
+        }
+
     feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
-    latest_row = test_df[feature_cols].iloc[-1:].values
-    latest_reshaped = latest_row.reshape((1, 1, latest_row.shape[1]))
+    latest_features = live_df[feature_cols].iloc[-1:].values
+    latest_reshaped = latest_features.reshape((1, 1, latest_features.shape[1]))
     prediction = lstm_model.predict(latest_reshaped, verbose=0)
+
     return {
         "predicted_active_power_5min": float(prediction[0][0]),
-        "timestamp": str(test_df.index[-1])
+        "timestamp": str(live_df.index[-1]),
+        "source": "live_influxdb"
     }
-
-
+    
 @app.get("/anomalies")
 def get_anomalies():
     recent = test_df.tail(50).copy()
