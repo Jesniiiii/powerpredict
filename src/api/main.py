@@ -153,3 +153,32 @@ def get_maintenance():
         "failure_probability": float(failure_prob),
         "risk_level": "high" if failure_prob > 0.5 else "low"
     }
+    
+@app.get("/equipment")
+def get_equipment():
+    sample_units = [
+        {"name": "Transformer T-14", "zone": "Zone 4", "air_temp_K": 302.1, "process_temp_K": 312.5, "rotational_speed_rpm": 1420, "torque_Nm": 58.2, "tool_wear_min": 210},
+        {"name": "Transformer T-08", "zone": "Zone 3", "air_temp_K": 298.7, "process_temp_K": 308.9, "rotational_speed_rpm": 1510, "torque_Nm": 44.1, "tool_wear_min": 130},
+        {"name": "Feeder switch F-3", "zone": "Zone 4", "air_temp_K": 297.0, "process_temp_K": 305.2, "rotational_speed_rpm": 1550, "torque_Nm": 38.0, "tool_wear_min": 45},
+        {"name": "Substation relay S-11", "zone": "Zone 2", "air_temp_K": 299.5, "process_temp_K": 309.1, "rotational_speed_rpm": 1480, "torque_Nm": 41.5, "tool_wear_min": 90},
+    ]
+
+    results = []
+    for unit in sample_units:
+        input_df = pd.DataFrame([{
+            "air_temp_K": unit["air_temp_K"],
+            "process_temp_K": unit["process_temp_K"],
+            "rotational_speed_rpm": unit["rotational_speed_rpm"],
+            "torque_Nm": unit["torque_Nm"],
+            "tool_wear_min": unit["tool_wear_min"]
+        }])
+        failure_prob = float(maintenance_model.predict_proba(input_df)[0][1])
+        health = float(round((1 - failure_prob) * 100, 1))
+        results.append({
+            "name": unit["name"],
+            "zone": unit["zone"],
+            "health": health,
+            "status": "bad" if health < 70 else "mid" if health < 90 else "good"
+        })
+
+    return {"equipment": results}
