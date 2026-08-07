@@ -298,3 +298,98 @@ body {
 [data-theme="dark"] .health-pill.good { background: #12261E !important; color: #4ADE80 !important; }
 [data-theme="dark"] .health-pill.mid { background: #2E230D !important; color: #F5B759 !important; }
 [data-theme="dark"] .health-pill.bad { background: #2C1513 !important; color: #F87171 !important; }
+
+.zone-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.zone-cell {
+  padding: 16px;
+  text-align: center;
+  border-radius: 8px;
+  font-weight: bold;
+  color: white;
+}
+.zone-cell.nominal { background: #2e7d32; }
+.zone-cell.watch { background: #ed6c02; }
+.zone-cell.critical { background: #d32f2f; }
+.status-critical { color: #d32f2f; font-weight: bold; }
+.status-watch { color: #ed6c02; }
+.status-nominal { color: #2e7d32; }
+
+/* Zone Map */
+.zone-map-card {
+  margin-bottom: 1.5rem;
+}
+
+.zone-map-card .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.zone-map-card .badge {
+  background: var(--border-color);
+  padding: 0.2rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.zone-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .zone-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.zone-cell {
+  padding: 12px 8px;
+  text-align: center;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: white;
+  transition: transform 0.15s;
+}
+
+.zone-cell:hover {
+  transform: scale(1.03);
+}
+
+.zone-cell.nominal { background: #2e7d32; }
+.zone-cell.watch { background: #ed6c02; }
+.zone-cell.critical { background: #d32f2f; }
+.zone-cell.offline { background: #64748b; }
+
+.zone-legend {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.zone-legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.zone-legend .dot.nominal { background: #2e7d32; }
+.zone-legend .dot.watch { background: #ed6c02; }
+.zone-legend .dot.critical { background: #d32f2f; }
+.zone-legend .dot.offline { background: #64748b; }

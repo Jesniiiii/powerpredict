@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import Dashboard from './components/Dashboard';
 import LoginPage from './components/LoginPage';
 import Sidebar from './components/Sidebar';
@@ -6,12 +6,16 @@ import ThemeToggle from './components/ThemeToggle';
 import EquipmentPage from './components/EquipmentPage';
 import AlertHistoryPage from './components/AlertHistoryPage';
 import SettingsPage from './components/SettingsPage';
+import LiveMonitoring from './components/LiveMonitoring';
+import ForecastingPage from './components/ForecastingPage';
+import AnomalyDetectionPage from './components/AnomalyDetectionPage';
+import ReportsPage from './components/ReportsPage';
 import './App.css';
 
 const ALLOWED_PAGES = {
-  Operator: ['dashboard', 'alerts', 'equipment'],
-  Admin: ['dashboard', 'alerts', 'equipment', 'settings'],
-  Technician: ['alerts', 'equipment'],
+  Operator: ['dashboard', 'monitoring', 'forecasting', 'anomalies', 'equipment'],
+  Admin: ['dashboard', 'monitoring', 'forecasting', 'anomalies', 'equipment', 'reports', 'settings'],
+  Technician: ['anomalies', 'equipment'],
 };
 
 function App() {
@@ -51,9 +55,12 @@ function App() {
 
   const pageTitles = {
     dashboard: ['Grid Operations Dashboard', 'Zone 4 — Northern Distribution Network'],
-    equipment: ['Equipment Health', 'All monitored units'],
-    alerts: ['Alert History', 'Past anomaly records'],
-    settings: ['Settings', 'Alert threshold configuration'],
+    monitoring: ['Live Monitoring', 'Streaming telemetry · 1s cadence'],
+    forecasting: ['Load Forecasting', 'LSTM v4.2 · 1.2M readings/day'],
+    anomalies: ['Anomaly Detection', 'Isolation forest + residual thresholding'],
+    equipment: ['Equipment Health', '248 monitored assets across 12 zones'],
+    reports: ['Reports', 'Regulatory & operational reporting'],
+    settings: ['Settings', 'Console configuration · Zone 4 operator profile'],
   };
 
   return (
@@ -73,8 +80,11 @@ function App() {
         </header>
         <main className="content">
           {page === 'dashboard' && <Dashboard />}
+          {page === 'monitoring' && <LiveMonitoring />}
+          {page === 'forecasting' && <ForecastingPage />}
+          {page === 'anomalies' && <AnomalyDetectionPage />}
           {page === 'equipment' && <EquipmentPage />}
-          {page === 'alerts' && <AlertHistoryPage />}
+          {page === 'reports' && <ReportsPage />}
           {page === 'settings' && <SettingsPage />}
         </main>
       </div>

@@ -1,6 +1,7 @@
 {
-  "precision": 0.010019083969465648,
-  "recall": 0.03535353535353535,
-  "f1_score": 0.015613382899628252,
-  "n_injected": 40
+    "precision": 0.042666666666666665,
+    "recall": 0.053156146179401995,
+    "f1_score": 0.047337278106508875,
+    "anomaly_count_detected": 375,
+    "ground_truth_count": 301
 }
