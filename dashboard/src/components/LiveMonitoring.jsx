@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import MetricCard from '../components/MetricCard';
-
+ 
 const API = 'http://localhost:8000';
-
+ 
 export default function LiveMonitoring() {
   const [latest, setLatest] = useState({});
   const [feeders, setFeeders] = useState([]);
-
+ 
   useEffect(() => {
     const fetchData = async () => {
       const [lRes, fRes] = await Promise.all([
@@ -21,14 +21,35 @@ export default function LiveMonitoring() {
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
-
+ 
+  const avgPowerFactor = feeders.length
+    ? (feeders.reduce((sum, f) => sum + (f.pf ?? 0), 0) / feeders.length).toFixed(2)
+    : '--';
+ 
+  const totalActivePower = feeders.length
+    ? feeders.reduce((sum, f) => sum + (f.active_power ?? 0), 0).toFixed(2)
+    : '--';
+ 
   return (
     <div className="page live-monitoring">
       <h1>Live Monitoring</h1>
       <div className="metrics-grid">
-        <MetricCard label="Line Frequency" value="49.98" unit="Hz" delta="Within ±0.05 Hz band" />
-        <MetricCard label="Avg. Power Factor" value="0.95" delta="▲ 0.02 vs. yesterday" />
-        <MetricCard label="Feeders Online" value="4/4" delta="All reporting" />
+        <MetricCard
+          label="Feeders Reporting"
+          value={feeders.length || '--'}
+          delta={feeders.length ? 'Live from InfluxDB' : 'No live data yet'}
+        />
+        <MetricCard
+          label="Avg. Power Factor"
+          value={avgPowerFactor}
+          delta={feeders.length ? `Across ${feeders.length} feeders` : ''}
+        />
+        <MetricCard
+          label="Total Active Power"
+          value={totalActivePower}
+          unit="kW"
+          delta="Sum across all reporting feeders"
+        />
         <MetricCard label="Voltage" value={latest.voltage?.toFixed(1) || '--'} unit="V" />
       </div>
       <div className="card">
@@ -52,3 +73,4 @@ export default function LiveMonitoring() {
     </div>
   );
 }
+ 

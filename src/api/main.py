@@ -88,6 +88,8 @@ def fetch_live_readings(limit=100, feeder_id=None):
       |> limit(n: {limit})
     '''
     tables = query_api.query_data_frame(query)
+    if isinstance(tables, list):
+        tables = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
     if tables.empty:
         return pd.DataFrame()
     tables = tables.rename(columns={
@@ -175,9 +177,10 @@ def get_forecast():
     if df.empty or "feeder_id" not in df.columns:
         return fallback_forecast("no live data / no feeder_id tag present")
  
-    # Forecast on whichever feeder has the most readings in this window,
-    # instead of blending all feeders together (the original bug)
-    target_feeder = df["feeder_id"].value_counts().idxmax()
+  # Forecast on whichever feeder has the most RECENT reading in this window
+    target_feeder = df.loc[df.index.max(), "feeder_id"]
+    if isinstance(target_feeder, pd.Series):  # multiple feeders shared the exact latest timestamp
+        target_feeder = target_feeder.iloc[0]
     df_feeder = df[df["feeder_id"] == target_feeder].sort_index()
  
     df_feat = build_features(df_feeder)
@@ -313,63 +316,105 @@ def get_equipment():
             "status": "bad" if health < 70 else "mid" if health < 90 else "good"
         })
     return {"equipment": results}
+
 @app.get("/forecast/metrics")
 def get_forecast_metrics():
-    # 1. Use your test set to evaluate the LSTM model
-    feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
+    df = fetch_live_readings(limit=500)
+    if df.empty or "feeder_id" not in df.columns:
+        return fallback_forecast_metrics("no live data")
+ 
+    target_feeder = df.loc[df.index.max(), "feeder_id"]
+    if isinstance(target_feeder, pd.Series):
+        target_feeder = target_feeder.iloc[0]
+    df_feeder = df[df["feeder_id"] == target_feeder].sort_index()
+ 
+    df_feat = build_features(df_feeder)
+    if df_feat.empty or len(df_feat) < 20:
+        return fallback_forecast_metrics(f"not enough live data for feeder {target_feeder}")
+ 
     target_col = "Global_active_power"
-    
-    # Take a sample of the test set (e.g., first 500 rows) to calculate metrics quickly
-    sample_df = test_df.head(500).copy()
-    X_test = sample_df[feature_cols].values
-    y_true = sample_df[target_col].values
-    
-    # Reshape for LSTM (assuming your model expects [samples, timesteps=1, features])
-    X_reshaped = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+    target_col = "Global_active_power"
+# REVERTED: don't exclude target_col - the model was trained with 23 features
+# including it, dropping it breaks the model's fixed input shape (this was my error)
+    feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
+    available = [c for c in feature_cols if c in df_feat.columns]
+ 
+    X = df_feat[available].values
+    y_true = df_feat[target_col].values
+    X_reshaped = X.reshape((X.shape[0], 1, X.shape[1]))
     y_pred = lstm_model.predict(X_reshaped, verbose=0).flatten()
-    
-    # Calculate MAPE
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-    
-    # Calculate R²
+ 
+    mape = float(np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1e-6))) * 100)
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    r2 = 1 - (ss_res / ss_tot)
-    
-    # Peak forecast (max predicted value in the test set)
-    peak_forecast = np.max(y_pred)
-    
-    # Very basic "drift" (just for demo, comparing mean of predictions vs mean of actuals)
-    drift = abs(np.mean(y_pred) - np.mean(y_true)) / np.mean(y_true) * 100
-    
-    # Accuracy by horizon (mock calculation, since your model only outputs 5min)
-    # We'll simulate degradation over longer horizons for the UI
+    r2 = float(1 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+    peak_forecast = float(np.max(y_pred))
+    drift = float(abs(np.mean(y_pred) - np.mean(y_true)) / max(np.mean(y_true), 1e-6) * 100)
+ 
+    # NOTE: still simulated degradation, not independently evaluated per horizon -
+    # the model only outputs a 5-min-ahead prediction, this is a scaled approximation
     accuracy_by_horizon = {
-        "5m": float(r2 * 100),
-        "15m": float(r2 * 95),   # slight degradation
-        "1h": float(r2 * 88),
-        "6h": float(r2 * 75),
-        "24h": float(r2 * 65)
+        "5m": r2 * 100,
+        "15m": r2 * 95,
+        "1h": r2 * 88,
+        "6h": r2 * 75,
+        "24h": r2 * 65
     }
-    
-    # Feature importance (hardcoded based on your notebook's feature engineering, or read from model if available)
+ 
+    # NOTE: still hardcoded placeholder values, not real SHAP output - flagged for later
     feature_importance = {
         "Lagged load (t-1h)": 92,
-        "Ambient temperature": 74,  # You can swap these for your actual top features if you have SHAP values
+        "Ambient temperature": 74,
         "Day-of-week": 51,
         "Solar irradiance": 38,
         "Holiday flag": 19
     }
-    
+ 
     return {
-        "mape_24h": float(mape),
-        "r2_score": float(r2),
-        "peak_forecast": float(peak_forecast),
-        "model_drift": float(drift),
+        "mape_24h": mape,
+        "r2_score": r2,
+        "peak_forecast": peak_forecast,
+        "model_drift": drift,
+        "feeder_id": str(target_feeder),
+        "source": "live_influxdb",
         "accuracy_by_horizon": accuracy_by_horizon,
         "feature_importance": feature_importance
     }
-    
+
+def fallback_forecast_metrics(reason):
+    """Used only when no live feeder data is available at all."""
+    target_col = "Global_active_power"
+    # REVERTED: don't exclude target_col - the model was trained with 23 features
+    # including it, dropping it breaks the model's fixed input shape (this was my error)
+    feature_cols = [c for c in test_df.columns if not c.startswith("target_")]
+    sample_df = test_df.head(500).copy()
+    X_test = sample_df[feature_cols].values
+    y_true = sample_df[target_col].values
+    X_reshaped = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+    y_pred = lstm_model.predict(X_reshaped, verbose=0).flatten()
+
+    mape = float(np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1e-6))) * 100)
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    r2 = float(1 - (ss_res / ss_tot)) if ss_tot > 0 else 0.0
+
+    return {
+        "mape_24h": mape,
+        "r2_score": r2,
+        "peak_forecast": float(np.max(y_pred)),
+        "model_drift": 0.0,
+        "source": "static_fallback",
+        "reason": reason,
+        "accuracy_by_horizon": {
+            "5m": r2 * 100, "15m": r2 * 95, "1h": r2 * 88, "6h": r2 * 75, "24h": r2 * 65
+        },
+        "feature_importance": {
+            "Lagged load (t-1h)": 92, "Ambient temperature": 74,
+            "Day-of-week": 51, "Solar irradiance": 38, "Holiday flag": 19
+        }
+    }
+ 
+ 
 @app.get("/anomalies/stats")
 def get_anomaly_stats():
     # Prepare data from test set
@@ -401,40 +446,48 @@ def get_anomaly_stats():
 
 @app.get("/feeders")
 def get_feeders():
-    # Get the latest row from test_df
-    latest = test_df.iloc[-1]
-    
-    # Derive 4 zone loads from the single household data
-    sm1 = latest.get("Sub_metering_1", 0)
-    sm2 = latest.get("Sub_metering_2", 0)
-    sm3 = latest.get("Sub_metering_3", 0)
-    total = latest["Global_active_power"]
-    main_load = total - (sm1 + sm2 + sm3)  # Zone 4 is the main house
-    
-    # Map these to 4 feeders with realistic voltage/current based on power
-    def estimate_voltage_current(power_kw):
-        # Assuming nominal 230V
-        v = 230 + (np.random.rand() * 6 - 3)  # slight variation
-        i = (power_kw * 1000) / v if power_kw > 0 else 0
-        return round(v, 1), round(i, 1)
-    
-    v1, i1 = estimate_voltage_current(sm1)
-    v2, i2 = estimate_voltage_current(sm2)
-    v3, i3 = estimate_voltage_current(sm3)
-    v4, i4 = estimate_voltage_current(main_load)
-    
-    # Status based on load relative to threshold (1 kW threshold for demo)
-    def get_status(power):
-        if power > 2.5: return "CRITICAL"
-        if power > 1.0: return "WATCH"
+    """Real per-feeder status from the latest InfluxDB readings, not a
+    fabricated split of one household's sub-metering channels."""
+    df = fetch_live_readings(limit=500)
+    if df.empty or "feeder_id" not in df.columns:
+        raise HTTPException(status_code=503, detail="No live feeder data available yet")
+ 
+    latest_per_feeder = df.sort_index().groupby("feeder_id").tail(1)
+ 
+    def get_zone(fid):
+        match = feeder_zone_df[feeder_zone_df["lv_feeder_id"].astype(str) == str(fid)]
+        return match.iloc[0]["zone_id"] if not match.empty else "unassigned"
+ 
+    def get_status(voltage):
+        if voltage < 0.92 * 230 or voltage > 1.06 * 230:
+            return "CRITICAL"
+        if voltage < 0.96 * 230 or voltage > 1.04 * 230:
+            return "WATCH"
         return "NOMINAL"
-    
-    return [
-        {"name": "FDR-0011 (Zone 1)", "zone": "Z1", "voltage": v1, "current": i1, "pf": round(0.92 + np.random.rand()*0.07, 2), "status": get_status(sm1)},
-        {"name": "FDR-0012 (Zone 2)", "zone": "Z2", "voltage": v2, "current": i2, "pf": round(0.92 + np.random.rand()*0.07, 2), "status": get_status(sm2)},
-        {"name": "FDR-0013 (Zone 3)", "zone": "Z3", "voltage": v3, "current": i3, "pf": round(0.92 + np.random.rand()*0.07, 2), "status": get_status(sm3)},
-        {"name": "FDR-0014 (Main)", "zone": "Z4", "voltage": v4, "current": i4, "pf": round(0.92 + np.random.rand()*0.07, 2), "status": get_status(main_load)}
-    ]
+ 
+    result = []
+    for _, row in latest_per_feeder.iterrows():
+        fid = row["feeder_id"]
+        voltage = float(row.get("Voltage", 230))
+        current = float(row.get("Global_intensity", 0))
+        power = float(row.get("Global_active_power", 0))
+        # power factor estimate from real active/reactive readings, not random
+        reactive = float(row.get("Global_reactive_power", 0))
+        apparent = (power ** 2 + reactive ** 2) ** 0.5
+        pf = round(power / apparent, 2) if apparent > 0 else 1.0
+ 
+        result.append({
+            "name": f"FDR-{fid}",
+            "zone": get_zone(fid),
+            "voltage": round(voltage, 1),
+            "current": round(current, 1),
+            "active_power": round(power, 2),
+            "pf": pf,
+            "status": get_status(voltage),
+            "timestamp": str(row.name),
+        })
+ 
+    return result
 
 @app.get("/zones")
 def get_zones():
@@ -475,31 +528,46 @@ def get_zones():
 
 @app.get("/anomalies/queue")
 def get_anomaly_queue():
-    # Reuse your anomaly detection logic on test_df to generate a list
-    recent = test_df.tail(100).copy()
-    recent["hour"] = recent.index.hour
-    recent["pct_change"] = recent["Global_active_power"].pct_change().fillna(0)
-    recent["expected_for_hour"] = recent.groupby("hour")["Global_active_power"].transform("mean")
-    recent["deviation_from_hourly_norm"] = recent["Global_active_power"] - recent["expected_for_hour"]
-    
-    features = recent[["pct_change", "deviation_from_hourly_norm", "Voltage", "Global_reactive_power"]]
-    scaled = anomaly_scaler.transform(features)
-    flags = iso_forest.predict(scaled)
-    
-    anomalies = recent[flags == -1].head(10)
-    
+    """Real detected anomalies from live per-feeder data, not randomized
+    placeholders. Severity is derived from how far voltage deviates from
+    nominal - a simple, explainable heuristic, not fabricated."""
+    df = fetch_live_readings(limit=500)
+    if df.empty or "feeder_id" not in df.columns:
+        return []
+ 
     queue = []
-    types = ["Voltage dip", "Load spike", "Suspected theft", "Thermal drift", "Harmonic distortion"]
-    statuses = ["Open", "Investigating", "Resolved"]
-    for idx, row in anomalies.iterrows():
-        queue.append({
-            "id": f"ANM-{np.random.randint(1000, 9999)}",
-            "type": np.random.choice(types),
-            "asset": f"Meter {np.random.randint(1000, 9999)}",
-            "zone": np.random.choice(["Z1", "Z2", "Z3", "Z4", "Z8"]),
-            "severity": np.random.choice(["CRITICAL", "WARNING", "INFO"]),
-            "age": f"{np.random.randint(1, 60)} min",
-            "status": np.random.choice(["Open", "Investigating", "Resolved"])
-        })
-    return queue
-
+    for feeder_id, group in df.groupby("feeder_id"):
+        group = group.sort_index()
+        df_feat = build_features(group)
+        if df_feat.empty:
+            continue
+ 
+        features = df_feat[["pct_change", "deviation_from_hourly_norm", "Voltage", "Global_reactive_power"]]
+        scaled = anomaly_scaler.transform(features)
+        flags = iso_forest.predict(scaled)  # -1 = anomaly
+ 
+        anomalous_rows = df_feat[flags == -1]
+        zone = feeder_zone_df[feeder_zone_df["lv_feeder_id"].astype(str) == str(feeder_id)]
+        zone_id = zone.iloc[0]["zone_id"] if not zone.empty else "unassigned"
+ 
+        for idx, row in anomalous_rows.tail(5).iterrows():  # cap per feeder so the queue doesn't explode
+            voltage = row["Voltage"]
+            deviation_pct = abs(voltage - 230) / 230 * 100
+            severity = "CRITICAL" if deviation_pct > 3 else "WARNING" if deviation_pct > 1.5 else "INFO"
+ 
+            queue.append({
+                "id": f"ANM-{feeder_id}-{idx.strftime('%H%M%S')}",
+                "type": "Voltage deviation",  # honest label - we're only flagging on voltage/deviation features here
+                "asset": f"Feeder {feeder_id}",
+                "zone": zone_id,
+                "severity": severity,
+                "timestamp": str(idx),
+                "active_power": round(float(row["Global_active_power"]), 2),
+                "voltage": round(float(voltage), 1),
+                "status": "Open",  # no real workflow state exists yet - honestly reflect that
+            })
+ 
+    # newest first
+    queue.sort(key=lambda x: x["timestamp"], reverse=True)
+    return queue[:20]
+ 
