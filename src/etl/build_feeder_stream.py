@@ -81,7 +81,8 @@ def main():
     # (e.g. feeder_id 81 appears under 6 different substations) - joining on feeder_id alone
     # would silently assign readings to an arbitrary/wrong zone.
     df = df.merge(
-        zone_map[["lv_feeder_id", "secondary_substation_id", "zone_id"]].drop_duplicates(
+        zone_map[["lv_feeder_id", "secondary_substation_id", "zone_id",
+                  "facility_type", "criticality_tier"]].drop_duplicates(
             subset=["lv_feeder_id", "secondary_substation_id"]
         ),
         on=["lv_feeder_id", "secondary_substation_id"], how="left"
@@ -128,15 +129,25 @@ def main():
 
     # --- Final tidy-up ---
     df = df.rename(columns={"data_collection_log_timestamp": "timestamp", "lv_feeder_id": "feeder_id"})
-    out_cols = ["timestamp", "feeder_id", "zone_id", "active_power", "voltage",
-                "current", "reactive_power", "is_injected_anomaly", "anomaly_type"]
+
+    # feeder_id alone is NOT a unique physical feeder identifier - it is reused across
+    # different substations (see join comment above, e.g. feeder_id 81 under 6 substations).
+    # feeder_uid is the real unique key and is what every downstream groupby/model should use.
+    df["feeder_uid"] = df["feeder_id"].astype(str) + "_" + df["secondary_substation_id"].astype(str)
+
+    out_cols = ["timestamp", "feeder_id", "feeder_uid", "secondary_substation_id", "zone_id",
+                "facility_type", "criticality_tier",
+                "active_power", "voltage", "current", "reactive_power",
+                "is_injected_anomaly", "anomaly_type"]
     df = df[out_cols].sort_values("timestamp").reset_index(drop=True)
 
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
     df.to_csv(OUTPUT_PATH, index=False)
 
     print(f"\nWrote {len(df)} rows to {OUTPUT_PATH}")
-    print(f"Feeders: {df['feeder_id'].nunique()} | Zones: {df['zone_id'].nunique()}")
+    print(f"Feeder IDs (non-unique): {df['feeder_id'].nunique()} | "
+          f"Feeder UIDs (unique physical feeders): {df['feeder_uid'].nunique()} | "
+          f"Zones: {df['zone_id'].nunique()}")
     print(f"Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
     print(f"\nSample rows:")
     print(df.head(5).to_string())

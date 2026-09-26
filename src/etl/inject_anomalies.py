@@ -83,12 +83,17 @@ def main():
 
     df = pd.read_csv(INPUT_PATH, parse_dates=["timestamp"])
     df["anomaly_type"] = df["anomaly_type"].astype(object)
-    df = df.sort_values(["feeder_id", "timestamp"]).reset_index(drop=True)
 
-    print(f"Loaded {len(df)} clean readings across {df['feeder_id'].nunique()} feeders")
+    # NOTE: feeder_id alone is NOT a unique physical feeder (it repeats across
+    # substations - see build_feeder_stream.py). feeder_uid is the real unique key
+    # and is what grouping/sorting/injection must use, or windows can straddle
+    # two unrelated physical feeders that happen to share a feeder_id.
+    df = df.sort_values(["feeder_uid", "timestamp"]).reset_index(drop=True)
 
-    feeder_groups = {fid: grp.index.tolist() for fid, grp in df.groupby("feeder_id")}
-    feeder_ids = list(feeder_groups.keys())
+    print(f"Loaded {len(df)} clean readings across {df['feeder_uid'].nunique()} feeders")
+
+    feeder_groups = {fuid: grp.index.tolist() for fuid, grp in df.groupby("feeder_uid")}
+    feeder_uids = list(feeder_groups.keys())
 
     log_rows = []
     injected_count = 0
@@ -97,8 +102,8 @@ def main():
 
     while injected_count < N_WINDOWS and attempts < max_attempts:
         attempts += 1
-        feeder_id = np.random.choice(feeder_ids)
-        row_indices = feeder_groups[feeder_id]
+        feeder_uid = np.random.choice(feeder_uids)
+        row_indices = feeder_groups[feeder_uid]
 
         window_len = np.random.randint(MIN_WINDOW_ROWS, MAX_WINDOW_ROWS + 1)
         if len(row_indices) <= window_len:
@@ -118,7 +123,8 @@ def main():
         df.loc[window_idx, "anomaly_type"] = anomaly_type
 
         log_rows.append({
-            "feeder_id": feeder_id,
+            "feeder_uid": feeder_uid,
+            "feeder_id": df.loc[window_idx[0], "feeder_id"],
             "anomaly_type": anomaly_type,
             "start_time": df.loc[window_idx[0], "timestamp"],
             "end_time": df.loc[window_idx[-1], "timestamp"],

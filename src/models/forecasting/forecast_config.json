@@ -1,0 +1,29 @@
+{
+  "feature_cols": [
+    "Global_active_power",
+    "Global_reactive_power",
+    "Voltage",
+    "Global_intensity",
+    "Global_active_power_lag_1",
+    "Global_active_power_lag_2",
+    "Global_active_power_lag_3",
+    "Global_active_power_lag_6",
+    "Global_active_power_lag_12",
+    "Global_active_power_roll_mean_3",
+    "Global_active_power_roll_std_3",
+    "Global_active_power_roll_mean_6",
+    "Global_active_power_roll_std_6",
+    "Global_active_power_roll_mean_12",
+    "Global_active_power_roll_std_12",
+    "hour",
+    "day_of_week",
+    "is_weekend",
+    "hour_sin",
+    "hour_cos"
+  ],
+  "target_col": "target_30min",
+  "window_size": 1,
+  "cadence_minutes": 30,
+  "test_mape": 19.162312542681764,
+  "test_r2": 0.9338287396680537
+}

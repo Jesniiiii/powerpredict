@@ -17,16 +17,19 @@ def build_features(df):
     df["hour"] = df.index.hour
     target = "Global_active_power"
 
-    df["pct_change"] = df.groupby("feeder_id")[target].pct_change().fillna(0)
-    df["expected_for_hour"] = df.groupby(["feeder_id", "hour"])[target].transform("mean")
+    # feeder_uid is the real unique physical feeder key (feeder_id alone repeats
+    # across substations - see build_feeder_stream.py). Grouping by feeder_id
+    # would blend unrelated feeders' statistics together.
+    df["pct_change"] = df.groupby("feeder_uid")[target].pct_change().fillna(0)
+    df["expected_for_hour"] = df.groupby(["feeder_uid", "hour"])[target].transform("mean")
     df["deviation_from_hourly_norm"] = df[target] - df["expected_for_hour"]
 
-    feeder_std = df.groupby("feeder_id")[target].transform("std")
+    feeder_std = df.groupby("feeder_uid")[target].transform("std")
     df["deviation_zscore"] = (df["deviation_from_hourly_norm"] / feeder_std.replace(0, np.nan)).fillna(0)
 
     # NEW: the power level itself, z-scored per feeder - directly captures spikes/drift
     # that pct_change and hourly-deviation might miss against natural feeder volatility
-    feeder_mean = df.groupby("feeder_id")[target].transform("mean")
+    feeder_mean = df.groupby("feeder_uid")[target].transform("mean")
     df["power_zscore"] = ((df[target] - feeder_mean) / feeder_std.replace(0, np.nan)).fillna(0)
 
     return df

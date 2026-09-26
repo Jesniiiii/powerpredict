@@ -12,7 +12,9 @@ export default function AlertsList({ anomalies }) {
           <div className="alert-item" key={i}>
             <span className="alert-dot red"></span>
             <div>
-              <div className="alert-title">Active power: {a.active_power.toFixed(2)} kW</div>
+              <div className="alert-title">
+                Active power: <span style={{ fontFamily: 'var(--font-mono)' }}>{a.active_power.toFixed(2)} kW</span>
+              </div>
               <div className="alert-meta">{a.timestamp}</div>
             </div>
           </div>

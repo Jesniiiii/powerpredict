@@ -1,0 +1,8 @@
+{
+  "model_id": "amazon/chronos-bolt-small",
+  "mode": "zero_shot",
+  "n_predictions": 4844,
+  "test_mse": 3.613339278038295,
+  "test_mape": 15.925841164432017,
+  "test_r2": 0.9468834199775436
+}

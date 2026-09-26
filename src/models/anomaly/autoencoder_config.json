@@ -1,0 +1,15 @@
+{
+  "feature_cols": [
+    "pct_change",
+    "deviation_zscore",
+    "power_zscore",
+    "Voltage",
+    "Global_reactive_power"
+  ],
+  "window": 6,
+  "threshold": 0.23545962410387836,
+  "threshold_percentile": 97,
+  "precision": 0.46996466431095407,
+  "recall": 0.266,
+  "f1_score": 0.3397190293742018
+}

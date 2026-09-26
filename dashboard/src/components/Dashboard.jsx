@@ -11,7 +11,7 @@ export default function Dashboard() {
   const [anomalies, setAnomalies] = useState([]);
   const [maintenance, setMaintenance] = useState(null);
   const [latest, setLatest] = useState(null);
-  const [zones, setZones] = useState([]); // NEW: real zone statuses from backend
+  const [zones, setZones] = useState([]);
   const [forecastHistory, setForecastHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -29,14 +29,14 @@ export default function Dashboard() {
         axios.get(`${API_BASE}/anomalies`),
         axios.get(`${API_BASE}/maintenance`),
         axios.get(`${API_BASE}/latest`),
-        axios.get(`${API_BASE}/zones`) // NEW
+        axios.get(`${API_BASE}/zones`)
       ]);
 
       setForecast(forecastRes.data);
       setAnomalies(anomaliesRes.data.recent_anomalies || []);
       setMaintenance(maintenanceRes.data);
       setLatest(latestRes.data);
-      setZones(zonesRes.data.zones || zonesRes.data); // adjust to match actual response shape once confirmed
+      setZones(zonesRes.data.zones || []);
 
       const newTime = new Date(forecastRes.data.timestamp);
       setForecastHistory(prev => {
@@ -46,7 +46,7 @@ export default function Dashboard() {
         }
         const next = [...prev, {
           time: newTime.toLocaleTimeString(),
-          power: forecastRes.data.predicted_active_power_5min
+          power: forecastRes.data.predicted_active_power_next
         }];
         return next.slice(-20);
       });
@@ -64,11 +64,10 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard">
-      {/* Metrics Grid */}
       <div className="metrics-grid">
         <MetricCard
-          label="Predicted load (5 min)"
-          value={forecast.predicted_active_power_5min.toFixed(2)}
+          label="Predicted load (next reading, ~30 min)"
+          value={forecast.predicted_active_power_next.toFixed(2)}
           unit="kW"
         />
         <MetricCard
@@ -94,16 +93,19 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Zone Status Map - now driven by real /zones data */}
       <div className="card zone-map-card">
         <div className="card-header">
           <span>Zone status map</span>
           <span className="badge">{zones.length} ZONES</span>
         </div>
         <div className="zone-grid">
-          {zones.map(({ zone_id, status }) => (
+          {zones.map(({ zone_id, status, criticality_tier, facility_type }) => (
             <div key={zone_id} className={`zone-cell ${status}`}>
-              {zone_id}
+              <div style={{ fontSize: '1rem', fontWeight: 700 }}>{zone_id}</div>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, opacity: 0.9, marginTop: 2 }}>
+                {criticality_tier?.toUpperCase()}
+              </div>
+              <div style={{ fontSize: '0.65rem', opacity: 0.85 }}>{facility_type}</div>
             </div>
           ))}
         </div>
@@ -114,7 +116,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Panels Row */}
       <div className="panels-row">
         <ForecastChart data={forecastHistory} />
         <AlertsList anomalies={anomalies} />

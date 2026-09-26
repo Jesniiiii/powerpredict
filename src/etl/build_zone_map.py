@@ -4,10 +4,15 @@ build_zone_map.py
 Builds data/processed/feeder_zone_map.csv by:
   1. Extracting distinct substations directly from the LV Feeder consumption file
      (using its embedded substation_geo_location - no risky join needed for this part)
-  2. Clustering those substations into 12 geographic zones (k-means on lat/long)
+  2. Clustering those substations into geographic zones (k-means on lat/long)
   3. Best-effort enrichment from the Secondary Sites file (customer count, ONAN rating)
      by matching secondary_substation_id <-> functionallocation. This step is optional -
      if the match rate is low, the script warns you but still produces a usable output.
+  4. Assigning a facility_type and derived criticality_tier per substation. NO dataset
+     in this pipeline has real facility-type labels (hospital, water treatment, etc.) -
+     this is a documented, seeded, reproducible synthetic assignment, same modeling-
+     assumption pattern as the synthetic voltage/current in build_feeder_stream.py.
+     SAY SO EXPLICITLY in your report - this is not real infrastructure data.
 
 Expected location: src/etl/build_zone_map.py
 Auto-detects the CSV files in data/raw/ukpn_feeders/ and data/raw/topology_source/
@@ -18,6 +23,7 @@ import os
 import re
 import glob
 import argparse
+import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 
@@ -33,6 +39,30 @@ N_ZONES = 5  # Reduced from 12: only 15 distinct substations in the LV Feeder ex
              # so 12 zones would force near-arbitrary 1-2 substation clusters.
              # 5 zones gives ~3 substations/zone on average - a more honest grouping.
              # Override via command line: python build_zone_map.py --zones 4
+
+RANDOM_SEED = 42  # same seed used across the pipeline (build_feeder_stream.py etc.)
+                   # for reproducibility of all synthetic/assumed values
+
+# --- SYNTHETIC facility_type assignment (DOCUMENTED MODELING ASSUMPTION) ---
+# No dataset here has real facility-type labels. Weighted so most substations are
+# ordinary residential/commercial load, with a small realistic minority of
+# higher-criticality facility types - not an even split, which would look arbitrary.
+FACILITY_WEIGHTS = {
+    "Hospital": 0.08,
+    "Water Treatment": 0.05,
+    "Emergency Services": 0.05,
+    "Industrial": 0.15,
+    "Commercial": 0.27,
+    "Residential": 0.40,
+}
+FACILITY_TO_CRITICALITY = {
+    "Hospital": "Critical",
+    "Water Treatment": "Critical",
+    "Emergency Services": "Critical",
+    "Industrial": "High",
+    "Commercial": "Medium",
+    "Residential": "Low",
+}
 # --------------------------------------------------------------------
 
 
@@ -61,6 +91,39 @@ def parse_geopoint(value):
     if len(match) >= 2:
         return float(match[0]), float(match[1])
     return None, None
+
+
+def assign_facility_types(substations, seed):
+    """Assigns a synthetic facility_type + derived criticality_tier per substation,
+    deterministically (seeded) so re-running the script gives the same assignment.
+
+    With only ~15 substations, a pure weighted random draw can (and did) land zero
+    Hospital/Industrial/Emergency Services by chance. Guaranteeing at least one of
+    each higher-criticality type - rather than leaving full coverage to chance -
+    keeps the demo/report meaningful (your panel specifically referenced hospitals
+    as the motivating example for criticality tiering). Still a documented synthetic
+    assumption, just no longer at the mercy of small-sample randomness."""
+    rng = np.random.default_rng(seed)
+    substations = substations.sort_values("secondary_substation_id").reset_index(drop=True)
+    n = len(substations)
+
+    types = list(FACILITY_WEIGHTS.keys())
+    weights = list(FACILITY_WEIGHTS.values())
+
+    GUARANTEED = ["Hospital", "Industrial", "Emergency Services"]
+    n_guaranteed = min(len(GUARANTEED), n)
+    guaranteed_positions = rng.choice(n, size=n_guaranteed, replace=False)
+
+    assigned = np.empty(n, dtype=object)
+    assigned[guaranteed_positions] = GUARANTEED[:n_guaranteed]
+
+    remaining_positions = [i for i in range(n) if i not in set(guaranteed_positions)]
+    if remaining_positions:
+        assigned[remaining_positions] = rng.choice(types, size=len(remaining_positions), p=weights)
+
+    substations["facility_type"] = assigned
+    substations["criticality_tier"] = substations["facility_type"].map(FACILITY_TO_CRITICALITY)
+    return substations
 
 
 def main():
@@ -114,6 +177,15 @@ def main():
     print("\nSubstations per zone:")
     print(zone_counts.to_string())
 
+    # --- Synthetic facility_type / criticality_tier assignment (documented assumption) ---
+    print("\nAssigning synthetic facility_type + criticality_tier per substation "
+          "(documented modeling assumption - no real facility data in this pipeline)...")
+    substations = assign_facility_types(substations, RANDOM_SEED)
+    print("\nFacility type distribution:")
+    print(substations["facility_type"].value_counts().to_string())
+    print("\nCriticality tier distribution:")
+    print(substations["criticality_tier"].value_counts().to_string())
+
     # --- Best-effort enrichment from Secondary Sites ---
     enrichment_cols = []
     if os.path.exists(secondary_sites_path):
@@ -144,9 +216,10 @@ def main():
         print(f"\nSecondary Sites file not found - skipping enrichment "
               f"(this is fine, zone map doesn't depend on it).")
 
-    # --- Join zone_id back onto every feeder (not just distinct substations) ---
+    # --- Join zone_id + facility_type + criticality_tier back onto every feeder ---
     zone_map = feeders[["lv_feeder_id", "secondary_substation_id"]].drop_duplicates().merge(
-        substations[["secondary_substation_id", "latitude", "longitude", "zone_id"] + enrichment_cols],
+        substations[["secondary_substation_id", "latitude", "longitude", "zone_id",
+                      "facility_type", "criticality_tier"] + enrichment_cols],
         on="secondary_substation_id", how="left"
     )
 

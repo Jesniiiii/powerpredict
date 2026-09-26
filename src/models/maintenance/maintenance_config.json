@@ -1,0 +1,36 @@
+{
+  "feature_cols": [
+    "HUFL",
+    "HULL",
+    "MUFL",
+    "MULL",
+    "LUFL",
+    "LULL",
+    "avg_load_roll_mean",
+    "avg_load_roll_std"
+  ],
+  "risk_percentile": 0.9,
+  "roll_window": 6,
+  "transformer_zone_assignment": {
+    "T1": "SPN-R000000730610-000-032Z",
+    "T2": "EPN-R00000000A01C-000-023Z"
+  },
+  "diagnosis_reference_stats": {
+    "T1": {
+      "roll_mean_median": 3.4198333140876565,
+      "roll_mean_scale": 2.057108543387139,
+      "roll_std_median": 0.3429110949264758,
+      "roll_std_scale": 0.23944917544206046,
+      "hv_lv_skew_median": 0.5026325255676951,
+      "hv_lv_skew_scale": 0.1839650949678598
+    },
+    "T2": {
+      "roll_mean_median": 15.667888879776001,
+      "roll_mean_scale": 5.1566074467748,
+      "roll_std_median": 0.664745232584535,
+      "roll_std_scale": 0.33996601622846545,
+      "hv_lv_skew_median": 1.2265269865835193,
+      "hv_lv_skew_scale": 0.6074857129140374
+    }
+  }
+}

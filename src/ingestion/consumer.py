@@ -1,7 +1,10 @@
 import json
 import os
+import math
+from collections import deque, defaultdict
+from datetime import datetime
+
 import numpy as np
-import pandas as pd
 import joblib
 import tensorflow as tf
 from dotenv import load_dotenv
@@ -9,26 +12,123 @@ from kafka import KafkaConsumer
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-# Load environment
+# ---- Paths / env ----
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, "..", "..", ".env")
 load_dotenv(dotenv_path=env_path)
+
+MODELS_DIR = os.path.join(script_dir, "..", "models", "anomaly")
+
 INFLUX_TOKEN = os.getenv("INFLUXDB_TOKEN")
+print(f"Looking for .env at: {env_path}")
+print(f"Token loaded: {'yes' if INFLUX_TOKEN else 'NO — check .env path/contents'}")
 
-# Paths to models
-MODELS_DIR = os.path.join(script_dir, "..", "models")
-lstm_model_path = os.path.join(MODELS_DIR, "forecasting", "lstm_baseline_5min.keras")
-iso_forest_path = os.path.join(MODELS_DIR, "anomaly", "isolation_forest.pkl")
-anomaly_scaler_path = os.path.join(MODELS_DIR, "anomaly", "anomaly_scaler.pkl")
+# ---- Load autoencoder anomaly model ----
+print("Loading autoencoder anomaly model...")
+autoencoder = tf.keras.models.load_model(os.path.join(MODELS_DIR, "lstm_autoencoder.keras"))
+autoencoder_scaler = joblib.load(os.path.join(MODELS_DIR, "autoencoder_scaler.pkl"))
+with open(os.path.join(MODELS_DIR, "autoencoder_config.json")) as f:
+    autoencoder_config = json.load(f)
 
-# Load ML Models
-print("Loading forecasting and anomaly models into consumer...")
-lstm_model = tf.keras.models.load_model(lstm_model_path)
-iso_forest = joblib.load(iso_forest_path)
-anomaly_scaler = joblib.load(anomaly_scaler_path)
-print("Models loaded successfully.")
+FEATURE_COLS = autoencoder_config["feature_cols"]
+WINDOW = autoencoder_config["window"]
+THRESHOLD = autoencoder_config["threshold"]
+N_FEATURES = len(FEATURE_COLS)
+print(f"Autoencoder ready: window={WINDOW}, features={FEATURE_COLS}, threshold={THRESHOLD:.5f}")
 
-# Setup Kafka Consumer
+
+# ---- Per-feeder online state ----
+class FeederState:
+    """Causal (online) versions of the offline groupby().transform() features.
+    Welford's algorithm gives running mean/variance of Global_active_power
+    without storing full history. z-scores use stats from BEFORE the current
+    point is folded in, so a point never contributes to its own baseline."""
+
+    def __init__(self):
+        self.last_power = None
+        self.power_count = 0
+        self.power_mean = 0.0
+        self.power_m2 = 0.0
+        self.hour_count = defaultdict(int)
+        self.hour_mean = defaultdict(float)
+        self.window = deque(maxlen=WINDOW)
+
+    def power_std(self):
+        if self.power_count < 2:
+            return None
+        return math.sqrt(self.power_m2 / (self.power_count - 1))
+
+    def update_power_stats(self, value):
+        self.power_count += 1
+        delta = value - self.power_mean
+        self.power_mean += delta / self.power_count
+        delta2 = value - self.power_mean
+        self.power_m2 += delta * delta2
+
+    def update_hour_stats(self, hour, value):
+        self.hour_count[hour] += 1
+        n = self.hour_count[hour]
+        self.hour_mean[hour] += (value - self.hour_mean[hour]) / n
+
+
+feeder_states = defaultdict(FeederState)
+
+
+def compute_live_features(feeder_id, hour, active_power, voltage, reactive_power):
+    state = feeder_states[feeder_id]
+
+    if state.last_power is not None and state.last_power != 0:
+        pct_change = (active_power - state.last_power) / state.last_power
+    else:
+        pct_change = 0.0
+
+    if state.hour_count[hour] > 0:
+        expected_for_hour = state.hour_mean[hour]
+    else:
+        expected_for_hour = active_power  # first time seen this hour -> zero deviation
+    deviation_from_hourly_norm = active_power - expected_for_hour
+
+    feeder_std = state.power_std()
+    if feeder_std:
+        deviation_zscore = deviation_from_hourly_norm / feeder_std
+        power_zscore = (active_power - state.power_mean) / feeder_std
+    else:
+        deviation_zscore = 0.0
+        power_zscore = 0.0
+
+    # update AFTER computing this point's features (causal ordering)
+    state.update_power_stats(active_power)
+    state.update_hour_stats(hour, active_power)
+    state.last_power = active_power
+
+    values = {
+        "pct_change": pct_change,
+        "deviation_zscore": deviation_zscore,
+        "power_zscore": power_zscore,
+        "Voltage": voltage,
+        "Global_reactive_power": reactive_power,
+    }
+    return [values[c] for c in FEATURE_COLS]
+
+
+def score_window(feeder_id, feature_row):
+    """Returns (is_anomaly, reconstruction_error), or (None, None) if this
+    feeder doesn't have WINDOW readings yet (still warming up)."""
+    state = feeder_states[feeder_id]
+    state.window.append(feature_row)
+
+    if len(state.window) < WINDOW:
+        return None, None
+
+    X = np.array(state.window, dtype=float)          # (WINDOW, N_FEATURES)
+    X_scaled = autoencoder_scaler.transform(X)         # scaler fit per-row, matches training
+    X_input = X_scaled.reshape(1, WINDOW, N_FEATURES)
+    recon = autoencoder.predict(X_input, verbose=0)
+    error = float(np.mean(np.square(X_scaled - recon[0])))
+    return bool(error > THRESHOLD), error
+
+
+# ---- Kafka + InfluxDB ----
 consumer = KafkaConsumer(
     "grid-readings",
     bootstrap_servers="localhost:9092",
@@ -36,172 +136,52 @@ consumer = KafkaConsumer(
     auto_offset_reset="latest"
 )
 
-# Setup InfluxDB Client
-client = InfluxDBClient(
-    url="http://localhost:8086",
-    token=INFLUX_TOKEN,
-    org="powerpredict"
-)
+client = InfluxDBClient(url="http://localhost:8086", token=INFLUX_TOKEN, org="powerpredict")
 write_api = client.write_api(write_options=SYNCHRONOUS)
 
-# Sliding window buffer to compute online features for each feeder
-# We need at least 13 readings to compute rolling/lag features
-feeder_buffers = {}
-
-# Keep hourly averages for active power per feeder to compute hourly norm deviation
-# We can initialize it dynamically or keep a running mean per hour in memory
-hourly_stats = {}  # key: (feeder_id, hour) -> running sum, count
-
-def update_hourly_stats(feeder_id, hour, value):
-    key = (feeder_id, hour)
-    if key not in hourly_stats:
-        hourly_stats[key] = {"sum": 0.0, "count": 0}
-    hourly_stats[key]["sum"] += value
-    hourly_stats[key]["count"] += 1
-    return hourly_stats[key]["sum"] / hourly_stats[key]["count"]
-
-print("Consumer started — listening for readings and running online ML inference...")
+print("Consumer started — listening for readings...")
 
 for message in consumer:
     data = message.value
     feeder_id = data["feeder_id"]
     zone_id = data["zone_id"]
-    active_power = data["active_power"]
-    voltage = data["voltage"]
-    current = data["current"]
-    reactive_power = data["reactive_power"]
-    
-    timestamp = pd.to_datetime(data["timestamp"])
-    hour = timestamp.hour
-    day_of_week = timestamp.dayofweek
-    is_weekend = int(day_of_week >= 5)
-    hour_sin = np.sin(2 * np.pi * hour / 24)
-    hour_cos = np.cos(2 * np.pi * hour / 24)
+    active_power = float(data["active_power"])
+    voltage = float(data["voltage"])
+    current = float(data["current"])
+    reactive_power = float(data["reactive_power"])
 
-    # Initialize buffer for this feeder if not exists
-    if feeder_id not in feeder_buffers:
-        feeder_buffers[feeder_id] = []
-        
-    # Append current reading
-    record = {
-        "Global_active_power": active_power,
-        "Voltage": voltage,
-        "Global_intensity": current,
-        "Global_reactive_power": reactive_power,
-        "hour": hour,
-        "day_of_week": day_of_week,
-        "is_weekend": is_weekend,
-        "hour_sin": hour_sin,
-        "hour_cos": hour_cos
-    }
-    feeder_buffers[feeder_id].append(record)
-    
-    # Keep only the last 13 readings (needed for 12 lags and rolling windows of size 12)
-    if len(feeder_buffers[feeder_id]) > 13:
-        feeder_buffers[feeder_id].pop(0)
-        
-    buffer = feeder_buffers[feeder_id]
-    
-    # Compute online features if buffer is full
-    is_anomaly_predicted = False
-    predicted_active_power_5min = 0.0
-    
-    # 1. Anomaly Detection (requires pct_change and deviation_from_hourly_norm)
-    avg_power_for_hour = update_hourly_stats(feeder_id, hour, active_power)
-    deviation_from_hourly_norm = active_power - avg_power_for_hour
-    
-    pct_change = 0.0
-    if len(buffer) >= 2:
-        prev_active_power = buffer[-2]["Global_active_power"]
-        if prev_active_power > 0:
-            pct_change = (active_power - prev_active_power) / prev_active_power
-            
-    # Anomaly features
-    anomaly_feats = np.array([[pct_change, deviation_from_hourly_norm, voltage, reactive_power]])
-    anomaly_feats_scaled = anomaly_scaler.transform(anomaly_feats)
-    anomaly_pred = iso_forest.predict(anomaly_feats_scaled)[0]
-    is_anomaly_predicted = bool(anomaly_pred == -1)
-    
-    # 2. Forecasting
-    if len(buffer) == 13:
-        # Prepare feature vector for the LSTM model
-        # The model expects 24 features:
-        # ['Global_active_power', 'Global_reactive_power', 'Voltage', 'Global_intensity',
-        #  'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3',
-        #  'Global_active_power_lag_1', 'Global_active_power_lag_2', 'Global_active_power_lag_3',
-        #  'Global_active_power_lag_6', 'Global_active_power_lag_12',
-        #  'Global_active_power_roll_mean_3', 'Global_active_power_roll_std_3',
-        #  'Global_active_power_roll_mean_6', 'Global_active_power_roll_std_6',
-        #  'Global_active_power_roll_mean_12', 'Global_active_power_roll_std_12',
-        #  'hour', 'day_of_week', 'is_weekend', 'hour_sin', 'hour_cos']
-        
-        # Get historical active powers in order from index 0 to 12 (buffer has 13 items)
-        ap_history = [b["Global_active_power"] for b in buffer] # length 13
-        
-        # Lags relative to current item (index 12 is current)
-        lag_1 = ap_history[11]
-        lag_2 = ap_history[10]
-        lag_3 = ap_history[9]
-        lag_6 = ap_history[6]
-        lag_12 = ap_history[0]
-        
-        # Rolling stats (mean/std of historical window ending before current, i.e., index 0..11)
-        mean_3 = np.mean(ap_history[9:12])
-        std_3 = np.std(ap_history[9:12])
-        
-        mean_6 = np.mean(ap_history[6:12])
-        std_6 = np.std(ap_history[6:12])
-        
-        mean_12 = np.mean(ap_history[0:12])
-        std_12 = np.std(ap_history[0:12])
-        
-        # Build the 23 features expected (excluding targets)
-        feat_vector = [
-            active_power,
-            reactive_power,
-            voltage,
-            current,
-            0.0, 0.0, 0.0,  # Sub_metering placeholders
-            lag_1, lag_2, lag_3, lag_6, lag_12,
-            mean_3, float(std_3) if not np.isnan(std_3) else 0.0,
-            mean_6, float(std_6) if not np.isnan(std_6) else 0.0,
-            mean_12, float(std_12) if not np.isnan(std_12) else 0.0,
-            hour,
-            day_of_week,
-            is_weekend,
-            hour_sin,
-            hour_cos
-        ]
-        
-        # Reshape for LSTM: [1, 1, 23]
-        feat_input = np.array([feat_vector]).reshape((1, 1, len(feat_vector)))
-        pred = lstm_model.predict(feat_input, verbose=0)
-        predicted_active_power_5min = float(pred[0][0])
-    else:
-        # Fallback to current load as simple forecast if buffer is not full
-        predicted_active_power_5min = float(active_power * 1.02)
-        
-    # Write to InfluxDB
+    ts = datetime.fromisoformat(data["timestamp"])
+    hour = ts.hour
+
+    feature_row = compute_live_features(feeder_id, hour, active_power, voltage, reactive_power)
+    is_anomaly_live, recon_error = score_window(feeder_id, feature_row)
+
     point = (
         Point("grid_reading")
-        .tag("feeder_id", str(feeder_id))
-        .tag("zone_id", str(zone_id))
-        .field("active_power", float(active_power))
-        .field("voltage", float(voltage))
-        .field("current", float(current))
-        .field("reactive_power", float(reactive_power))
-        .field("is_injected_anomaly", bool(data.get("is_injected_anomaly", False)))
-        .field("is_anomaly_predicted", bool(is_anomaly_predicted))
-        .field("predicted_active_power_5min", float(predicted_active_power_5min))
+        .tag("feeder_id", feeder_id)
+        .tag("zone_id", zone_id)
+        .field("active_power", active_power)
+        .field("voltage", voltage)
+        .field("current", current)
+        .field("reactive_power", reactive_power)
+        .field("is_injected_anomaly", data.get("is_injected_anomaly", False))
     )
-    
-    anomaly_type = data.get("anomaly_type")
-    if anomaly_type and str(anomaly_type) != "nan":
-        point = point.tag("anomaly_type", str(anomaly_type))
-        
+    if data.get("anomaly_type"):
+        point = point.tag("anomaly_type", data["anomaly_type"])
+    if recon_error is not None:
+        point = point.field("live_reconstruction_error", recon_error)
+        point = point.field("live_is_anomaly", is_anomaly_live)
+
     write_api.write(bucket="grid_data", record=point)
+
+    if recon_error is None:
+        status = "warming up"
+    elif is_anomaly_live:
+        status = f"ANOMALY (err={recon_error:.4f})"
+    else:
+        status = f"normal (err={recon_error:.4f})"
+
     print(
-        f"Processed [{feeder_id} / {zone_id}]: P={active_power:.2f} V={voltage:.1f} | "
-        f"AnomalyPred={is_anomaly_predicted} (Injected={data.get('is_injected_anomaly', False)}) | "
-        f"Forecast={predicted_active_power_5min:.2f} kW"
+        f"Written [{feeder_id} / {zone_id}]: "
+        f"P={active_power:.2f} V={voltage:.1f} live_anomaly={status}"
     )

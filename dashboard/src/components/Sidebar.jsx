@@ -1,10 +1,5 @@
-export default function Sidebar({ currentPage, onNavigate, onLogout, role }) {
-  const navConfig = {
-    Operator: ['dashboard', 'monitoring', 'forecasting', 'anomalies', 'equipment'],
-    Admin: ['dashboard', 'monitoring', 'forecasting', 'anomalies', 'equipment', 'reports', 'settings'],
-    Technician: ['anomalies', 'equipment'],
-  };
-  const visiblePages = navConfig[role] || [];
+export default function Sidebar({ currentPage, onNavigate, onLogout, role, allowedPages }) {
+  const visiblePages = allowedPages || [];
 
   // Helper to render icon based on page name
   const getIcon = (page) => {
@@ -20,7 +15,6 @@ export default function Sidebar({ currentPage, onNavigate, onLogout, role }) {
     }
   };
 
-  // Define sections
   const monitorPages = ['dashboard', 'monitoring', 'forecasting', 'anomalies'];
   const assetPages = ['equipment', 'reports'];
   const systemPages = ['settings'];
@@ -39,7 +33,6 @@ export default function Sidebar({ currentPage, onNavigate, onLogout, role }) {
         </div>
       </div>
 
-      {/* Monitor section */}
       {visiblePages.some(p => monitorPages.includes(p)) && (
         <>
           <div className="nav-section-label">Monitor</div>
@@ -56,7 +49,6 @@ export default function Sidebar({ currentPage, onNavigate, onLogout, role }) {
         </>
       )}
 
-      {/* Assets section */}
       {visiblePages.some(p => assetPages.includes(p)) && (
         <>
           <div className="nav-section-label">Assets</div>
@@ -73,7 +65,6 @@ export default function Sidebar({ currentPage, onNavigate, onLogout, role }) {
         </>
       )}
 
-      {/* System section */}
       {visiblePages.some(p => systemPages.includes(p)) && (
         <>
           <div className="nav-section-label">System</div>
