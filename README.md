@@ -1,6 +1,6 @@
 # PowerPredict
 
-**Final-year B.Tech project** — AI-driven smart grid analytics platform.
+AI-driven smart grid analytics platform.
 
 Real-time load forecasting, anomaly detection, and predictive maintenance
 diagnosis for electrical distribution networks, built on real UK Power
